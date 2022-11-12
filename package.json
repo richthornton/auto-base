@@ -2,7 +2,7 @@
   "name": "auto-base",
   "version": "0.1.0",
   "scripts": {
-    "build": "tsup"
+    "build": "tsup --dts"
   },
   "dependencies": {
     "@automerge/automerge": "^2.0.0-beta.4",
