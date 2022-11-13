@@ -1,4 +1,5 @@
-import * as Automerge from "@automerge/automerge";
+import type { Automerge } from "./Automerge";
+import type { Doc, ChangeFn } from "@automerge/automerge";
 import * as t from "io-ts";
 import { MigrationSteps } from "./Migrations";
 import { SupabaseV1Adapter } from "./SupabaseAdapter";
@@ -24,11 +25,13 @@ export async function RepositoryConstructor<
   migrations,
   docId,
   adapter,
+  automerge,
 }: {
   name: string;
   migrations: MigrationSteps<DocType>;
   docId: string;
   adapter: Adapter;
+  automerge: Automerge;
 }) {
   try {
     const initialValue = await adapter.supabaseClient
@@ -40,44 +43,48 @@ export async function RepositoryConstructor<
       const binaryChanges = initialValue.data.map(
         (iv) => new Uint8Array(iv.change)
       );
-      const [doc] = Automerge.applyChanges<DocType>(
-        Automerge.init(),
+      const [doc] = automerge.applyChanges<DocType>(
+        automerge.init(),
         binaryChanges
       );
-      return new Repo(name, doc, docId, adapter, false);
+      return new Repo(name, doc, docId, adapter, false, automerge);
     }
     throw Error("Initial value not set");
   } catch (error) {
     return new Repo(
       name,
-      Automerge.from(migrations.initialValue),
+      automerge.from(migrations.initialValue),
       docId,
       adapter,
-      true
+      true,
+      automerge
     );
   }
 }
 
 class Repo<DocType> {
-  public document: Automerge.Doc<DocType>;
+  public document: Doc<DocType>;
   private name: string;
   private docId: string;
   private actorId: string;
-  private listeners: Array<(doc: Automerge.Doc<DocType>) => void> = [];
+  private listeners: Array<(doc: Doc<DocType>) => void> = [];
   private adapter: Adapter;
+  private automerge: Automerge;
 
   constructor(
     name: string,
-    initialDocument: Automerge.Doc<DocType>,
+    initialDocument: Doc<DocType>,
     docId: string,
     adapter: Adapter,
-    isFirstInstance: boolean
+    isFirstInstance: boolean,
+    automerge: Automerge
   ) {
     this.name = name;
     this.document = initialDocument;
     this.docId = docId;
-    this.actorId = Automerge.getActorId(initialDocument);
+    this.actorId = automerge.getActorId(initialDocument);
     this.adapter = adapter;
+    this.automerge = automerge;
     adapter.supabaseClient
       // in Supabase you can only subscribe once to a specific query, so have to be as specific as possible for each repo
       .from<RemoteDataType>(`${adapter.tableName}:docId=eq.${docId}`)
@@ -94,24 +101,26 @@ class Repo<DocType> {
       })
       .subscribe();
     if (isFirstInstance) {
-      this.sendInitialChangesToServer(Automerge.getAllChanges(this.document));
+      this.sendInitialChangesToServer(
+        this.automerge.getAllChanges(this.document)
+      );
     }
   }
 
-  public updatedDataLocal = (callback: Automerge.ChangeFn<DocType>) => {
-    const newDoc = Automerge.change(this.document, callback);
-    const change = Automerge.getLastLocalChange(newDoc);
+  public updatedDataLocal = (callback: ChangeFn<DocType>) => {
+    const newDoc = this.automerge.change(this.document, callback);
+    const change = this.automerge.getLastLocalChange(newDoc);
     this.updateDoc(newDoc);
     if (change) {
       this.sendUpdateToServer(change);
     }
   };
 
-  public addListener = (callback: (doc: Automerge.Doc<DocType>) => void) => {
+  public addListener = (callback: (doc: Doc<DocType>) => void) => {
     this.listeners.push(callback);
   };
 
-  public removeListener = (callback: (doc: Automerge.Doc<DocType>) => void) => {
+  public removeListener = (callback: (doc: Doc<DocType>) => void) => {
     this.listeners = this.listeners.filter((listener) => listener !== callback);
   };
 
@@ -145,13 +154,13 @@ class Repo<DocType> {
   };
 
   private applyRemoteChange = (remoteData: RemoteDataType) => {
-    const [newDoc] = Automerge.applyChanges(this.document, [
+    const [newDoc] = this.automerge.applyChanges(this.document, [
       new Uint8Array(remoteData.change),
     ]);
     this.updateDoc(newDoc);
   };
 
-  private updateDoc = (newDoc: Automerge.Doc<DocType>) => {
+  private updateDoc = (newDoc: Doc<DocType>) => {
     this.document = newDoc;
     this.updateListeners();
   };
